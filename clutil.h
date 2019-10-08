@@ -140,7 +140,7 @@ switch(error){
     }
 }
 
-static inline void check(cl_int code, char *prefix) {
+static inline void check(cl_int code, const char *prefix) {
   if (code == CL_SUCCESS) return;
   fprintf(stderr, "%s: %s\n", prefix ? prefix : "An OpenCL error occured", getErrorString(code));
   exit(code);

@@ -36,6 +36,7 @@ endif (CMAKE_COMPILER_IS_GNUCC)
 add_executable (gpu ${opencl_src})
 target_link_libraries(gpu ${OpenCL_LIBRARY})
 
+# ADD TO THIS WHENEVER YOU ADD A CL FILE
 add_custom_command(
         TARGET gpu PRE_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy

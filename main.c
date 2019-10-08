@@ -2,7 +2,9 @@
 #include <string.h>
 #include <inttypes.h>
 #include <time.h>
+#ifdef __linux
 #include <unistd.h>
+#endif
 #include <errno.h>
 
 #define min(a, b) ((a) < (b) ? (a) : (b))
@@ -29,11 +31,18 @@ static inline uint64_t stop_timer(uint64_t start) {
 }
 
 int main(int argc, char **argv) {
+    // Settings
+    // Whenever you add a CL file, remember to also edit the bottom of CMakeLists.txt
     const char *kernel_file = "kernel.cl";
     const char *kernel_name = "start";
+    const char *header_names[] = {"jrand.cl"};
 
+
+#ifdef __linux
     printf("PID: %u\n", getpid());
+#endif
 
+    // Find devices
     cl_uint num_platforms;
     check(clGetPlatformIDs(0, NULL, &num_platforms), "getPlatformIDs (num)");
     printf("%d platforms:\n", num_platforms);
@@ -73,38 +82,42 @@ int main(int argc, char **argv) {
         return -1;
     }
 
+    // Create CL context
     cl_context context = clCreateContext(NULL, 1, &device, NULL, NULL, NULL);
     device_info *info = getDeviceInfo(device);
     printf("Using %s\n", info->info_str);
     free(info);
     cl_command_queue queue = clCreateCommandQueueWithProperties(context, device, 0, NULL);
 
-    const char *header_names[] = {"jrand.cl"};
+    // Compile headers
+    const unsigned header_count = sizeof(header_names) / sizeof(*header_names);
     cl_int error;
-    const char *jrand_src = readFile("jrand.cl");
-    cl_program jrand_cl = clCreateProgramWithSource(context, 1, &jrand_src, NULL, &error);
-    check(error,"jrand header");
-    const cl_program headers[] = {jrand_cl};
-    //free((void *) jrand_src);
-    error=clCompileProgram(jrand_cl, 0, NULL, NULL, 0, NULL, NULL, NULL, NULL);
-    //check(error, "Compiling jrand.cl");
-    if (error == CL_COMPILE_PROGRAM_FAILURE) {
-        size_t log_size;
-        clGetProgramBuildInfo(jrand_cl, device, CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size);
-        char *log = (char *) malloc(log_size);
-        clGetProgramBuildInfo(jrand_cl, device, CL_PROGRAM_BUILD_LOG, log_size, log, NULL);
-        printf("%s\n", log);
-        exit(error);
-    } else if (error) {
-        printf("Error compiling: %s\n", getErrorString(error));
-        exit(error);
+    cl_program headers[header_count];
+    for (int i = 0; i < header_count; i++) {
+        const char *header_src = readFile(header_names[i]);
+        headers[i] = clCreateProgramWithSource(context, header_count, &header_src, NULL, &error);
+        check(error, header_names[i]);
+        error = clCompileProgram(headers[i], 0, NULL, NULL, 0, NULL, NULL, NULL, NULL);
+        if (error == CL_COMPILE_PROGRAM_FAILURE || error == CL_BUILD_PROGRAM_FAILURE) {
+            size_t log_size;
+            clGetProgramBuildInfo(headers[i], device, CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size);
+            char *log = (char *) malloc(log_size);
+            clGetProgramBuildInfo(headers[i], device, CL_PROGRAM_BUILD_LOG, log_size, log, NULL);
+            printf("%s\n", log);
+            exit(error);
+        } else if (error) {
+            printf("Error compiling: %s\n", getErrorString(error));
+            exit(error);
+        }
     }
+
+    // Compile main source
     const char *main_src = readFile(kernel_file);
     cl_program main_cl = clCreateProgramWithSource(context, 1, &main_src, NULL, &error);
     check(error, "Creating program");
     printf("Compiling...\n");
-    error = clCompileProgram(main_cl, 0, NULL, NULL, 1, headers, header_names, NULL, NULL);
-    if (error == CL_COMPILE_PROGRAM_FAILURE) {
+    error = clCompileProgram(main_cl, 0, NULL, NULL, header_count, headers, header_names, NULL, NULL);
+    if (error == CL_COMPILE_PROGRAM_FAILURE || error == CL_BUILD_PROGRAM_FAILURE) {
         size_t log_size;
         clGetProgramBuildInfo(main_cl, device, CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size);
         char *log = (char *) malloc(log_size);
@@ -115,12 +128,17 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Error compiling: %s\n", getErrorString(error));
         exit(error);
     }
+
+    // Link
     const cl_program programs[] = {main_cl};
     printf("Linking...\n");
     cl_program program = clLinkProgram(context, 0, NULL, NULL, 1, programs, NULL, NULL, &error);
     check(error, "Linking");
     cl_kernel kernel = clCreateKernel(program, kernel_name, NULL);
 
+
+
+    // Main program, host side
     unsigned int x2total = 34;
     unsigned int x2step = 19;
     size_t ntotal = 1LLU << x2total;
@@ -140,8 +158,6 @@ int main(int argc, char **argv) {
 
     uint64_t *seeds = malloc(nstep * sizeof(uint64_t));
     uint16_t *output = malloc(nstep * sizeof(uint16_t));
-
-    // FILE *f = fopen(file, "w");
 
     char *kf = malloc(strlen(kernel_file));
     strcpy(kf, kernel_file);

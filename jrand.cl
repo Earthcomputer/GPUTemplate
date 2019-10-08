@@ -3,7 +3,7 @@
 
 #undef JRAND_DOUBLE
 
-#define RANDOM_MULTIPLIER_LONG 0x5DEECE66DULL
+#define RANDOM_MULTIPLIER_LONG 0x5DEECE66DUL
 
 #ifdef JRAND_DOUBLE
 #define Random double
@@ -21,7 +21,7 @@ inline uint random_next (Random *random, int bits) {
 #define Random ulong
 #define RANDOM_MULTIPLIER RANDOM_MULTIPLIER_LONG
 #define RANDOM_ADDEND 0xBUL
-#define RANDOM_MASK (1ULL << 48) - 1
+#define RANDOM_MASK (1UL << 48) - 1
 #define RANDOM_SCALE 1
 
 // Random::next(bits)
