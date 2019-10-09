@@ -188,7 +188,8 @@ int main(int argc, char **argv) {
     printf("Linking...\n");
     cl_program program = clLinkProgram(context, 0, NULL, NULL, 1, programs, NULL, NULL, &error);
     check(error, "Linking");
-    cl_kernel kernel = clCreateKernel(program, kernel_name, NULL);
+    cl_kernel kernel = clCreateKernel(program, kernel_name, &error);
+    check(error, "Create kernel");
 
 
 
