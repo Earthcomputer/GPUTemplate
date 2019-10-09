@@ -1,4 +1,5 @@
 
+#define LOCAL_SIZE 65536
 #define N_STATES 5
 #define N_RULES (N_STATES * (N_STATES+1) / 2 * (N_STATES-1))
 #define MAX_SIZE 12
@@ -49,7 +50,7 @@ static inline int simulate(int size, char *automaton) {
 
 // combination_count = (N_STATES - 1) ^ rule_changes * nCr(N_RULES - 1, rule_changes)
 __kernel void start(ulong offset, int rule_changes, ulong combination_count, __constant char *base_automaton,
-        __local char *local_results, __local size_t *local_successes, __global char *global_results, __global size_t *global_successes) {
+       __global char *global_results, __global size_t *global_successes) {
 
     size_t global_id = get_global_id(0);
     size_t local_id = get_local_id(0);
@@ -82,6 +83,9 @@ __kernel void start(ulong offset, int rule_changes, ulong combination_count, __c
     successes += simulate(8, automaton);
     successes += simulate(10, automaton);
     successes = (successes + 1) * simulate(9, automaton);
+
+    __local char local_results[LOCAL_SIZE];
+    __local size_t local_successes[LOCAL_SIZE];
 
     // Search for the result with the most successes
     local_results[local_id] = successes;
