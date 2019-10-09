@@ -16,6 +16,15 @@
 
 #define TYPE CL_DEVICE_TYPE_ALL
 
+size_t flp2 (size_t x) {
+    x = x | (x >> 1);
+    x = x | (x >> 2);
+    x = x | (x >> 4);
+    x = x | (x >> 8);
+    x = x | (x >> 16);
+    return x - (x >> 1);
+}
+
 static inline uint64_t get_timer() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -30,7 +39,52 @@ static inline uint64_t stop_timer(uint64_t start) {
     return get_timer() - start;
 }
 
+#define N_STATES 5
+#define N_RULES (N_STATES * (N_STATES+1) / 2 * (N_STATES-1))
+#define max(a, b) ((a) > (b) ? (a) : (b))
+
+const char DAN_AUTOMATON[N_STATES-1][N_STATES][N_STATES] = {{{0,1,0,1,0},{1,3,2,0,3},{0,2,0,3,0},{1,0,3,0,0},{0,3,0,0,0}},{{1,1,0,3,2},{1,1,0,3,0},{0,0,3,0,0},{3,3,0,0,0},{2,0,0,0,0}},{{2,3,2,0,0},{3,2,3,3,2},{2,3,1,0,0},{0,3,0,3,3},{0,2,0,3,0}},{{2,2,2,2,2},{2,0,2,2,0},{2,2,3,0,0},{2,2,0,4,4},{2,0,0,4,0}}};
+
+void encode_automaton(const char *multi_dimensional_array, char *dest) {
+    for (int middle = 0; middle < N_STATES - 1; middle++) {
+        for (int left = 0; left < N_STATES; left++) {
+            for (int right = 0; right < N_STATES; right++) {
+                int l = min(left, right);
+                int r = max(left, right);
+                int index = middle * (N_RULES / (N_STATES - 1));
+                index += ((N_STATES * (N_STATES+1)) - ((N_STATES-l) * (N_STATES-l+1))) / 2;
+                index += r - l;
+                dest[index] = *(multi_dimensional_array + right + N_STATES * (left + N_STATES * middle));
+            }
+        }
+    }
+}
+
+// Returns factorial of n
+size_t factorial(size_t n) {
+    size_t res = 1;
+    for (size_t i = 2; i <= n; i++)
+        res = res * i;
+    return res;
+}
+
+size_t nCr(size_t n, size_t r) {
+    return factorial(n) / (factorial(r) * factorial(n - r));
+}
+
+size_t pow(size_t x, size_t n) {
+    size_t result = 1;
+    for (size_t i = 0; i < n; i++)
+        result *= x;
+    return result;
+}
+
+
 int main(int argc, char **argv) {
+
+    char automaton[N_RULES];
+    encode_automaton(&DAN_AUTOMATON[0][0][0], automaton);
+
     // Settings
     // Whenever you add a CL file, remember to also edit the bottom of CMakeLists.txt
     const char *kernel_file = "kernel.cl";
@@ -139,95 +193,113 @@ int main(int argc, char **argv) {
 
 
     // Main program, host side
-    unsigned int x2total = 34;
-    unsigned int x2step = 19;
-    size_t ntotal = 1LLU << x2total;
-    size_t nstep = 1LLU << min(x2step, x2total);
-    uint64_t stride = 1LLU << (48U - x2total);
+    size_t local_size;
+    check(clGetDeviceInfo(device, CL_DEVICE_MAX_WORK_ITEM_SIZES, sizeof(local_size), &local_size, NULL), "Get max work item sizes");
+    local_size = flp2(local_size);
+    cl_uint address_bits;
+    check(clGetDeviceInfo(device, CL_DEVICE_ADDRESS_BITS, sizeof(address_bits), &address_bits, NULL), "Get device address bits");
+    size_t max_global_size = 1LLU << min(address_bits, 32);
 
-    printf("Total: %llu, step: %llu, stride: %llu\n", ntotal, nstep, stride);
+    printf("Local size: %ld; Global size: %ld\n", local_size, max_global_size);
 
-    cl_mem mem_seeds = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(cl_ulong) * nstep, NULL, NULL);
-    cl_mem mem_output = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(cl_ushort) * nstep, NULL, NULL);
+    cl_mem mem_base_automaton = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(automaton), NULL, NULL);
 
-    check(clSetKernelArg(kernel, 1, sizeof(cl_ulong), &stride), "Argument stride");
-    check(clSetKernelArg(kernel, 2, sizeof(cl_mem), &mem_seeds), "Argument seeds");
-    check(clSetKernelArg(kernel, 3, sizeof(cl_mem), &mem_output), "Argument output");
+    cl_mem mem_local_results = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(char) * local_size, NULL, NULL);
+    cl_mem mem_local_successes = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(size_t) * local_size, NULL, NULL);
+    cl_mem mem_global_results = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(char) * (max_global_size / local_size), NULL, NULL);
+    cl_mem mem_global_successes = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(size_t) * (max_global_size / local_size), NULL, NULL);
 
-    size_t global_work_size[1] = {nstep};
+    check(clEnqueueWriteBuffer(queue, mem_base_automaton, CL_FALSE, 0, sizeof(automaton), automaton, 0, NULL, NULL), "Write Base Automaton");
 
-    uint64_t *seeds = malloc(nstep * sizeof(uint64_t));
-    uint16_t *output = malloc(nstep * sizeof(uint16_t));
+    check(clSetKernelArg(kernel, 3, sizeof(cl_mem), &mem_base_automaton), "Base Automaton");
+    check(clSetKernelArg(kernel, 4, sizeof(cl_mem), &mem_local_results), "Local Results");
+    check(clSetKernelArg(kernel, 5, sizeof(cl_mem), &mem_local_successes), "Local Successes");
+    check(clSetKernelArg(kernel, 6, sizeof(cl_mem), &mem_global_results), "Global Results");
+    check(clSetKernelArg(kernel, 7, sizeof(cl_mem), &mem_global_successes), "Global Successes");
 
     char *kf = malloc(strlen(kernel_file));
     strcpy(kf, kernel_file);
     kf[strlen(kf) - 3] = 0;
     printf("Executing %s.%s\n", kf, kernel_name);
 
-    FILE *log_file = fopen("out.txt", "w");
-    if (!log_file) perror("Error opening logfile");
-	printf("Work Load possible: %d %d %d \n",CL_DEVICE_MAX_WORK_GROUP_SIZE,CL_DEVICE_MAX_WORK_ITEM_SIZES,CL_DEVICE_LOCAL_MEM_SIZE);
-    uint64_t t = start_timer();
-    for (size_t offset = 0; offset < ntotal; offset += nstep) {
-        for (size_t i = 0; i < nstep; i++) seeds[i] = offset + i;
-        float perc = offset * 100.f / ntotal;
-        uint64_t t2 = start_timer();
-        check(clSetKernelArg(kernel, 0, sizeof(offset), &offset), "Argument offset");
-        printf("\rx  %3.3f%%", perc);
-        fflush(stdout);
-        check(clEnqueueNDRangeKernel(queue, kernel, 1, NULL, global_work_size, NULL, 0, NULL, NULL), "\nExecute");
-        check(clFinish(queue), "\nFinish execute");
-        printf("\r<- %3.3f%%", perc);
-        fflush(stdout);
-        check(clEnqueueReadBuffer(queue, mem_output, 1, 0, nstep * sizeof(uint16_t), output, 0, NULL, NULL), "\nRead");
-        check(clEnqueueReadBuffer(queue, mem_seeds, 1, 0, nstep * sizeof(uint64_t), seeds, 0, NULL, NULL), "\nRead");
-        uint64_t d2 = stop_timer(t2);
-        printf("\rw  %3.3f%% %.4f" CLEAR_LINE, perc, d2 / 1000000.f);
-        fflush(stdout);
-        for (size_t i = 0; i < nstep; i++) {
-            uint8_t count = output[i] >> 8u;
-            if (count > 0) {
-                fprintf(log_file, "%016llx\n", seeds[i]);
-                //printf("\r%016lx%s\n", seeds[i], CLEAR_LINE);
-            }
-        }
-        fflush(log_file);
-        uint64_t d = get_timer() - t;
-        double per_item = (double) d / (offset + nstep);
-        double eta = ((double) d / ((offset + nstep) * 1000000000.)) * (ntotal - offset - nstep);
-        uint64_t d2ms = d2 / 1000000;
-        printf("  %fs / %llu items = %lfns/item, %llums/batch, ETA: %lfs (%dh%dm%ds)", d / 1000000000.f, offset + nstep,
-               per_item, d2ms, eta,
-               (int) (eta / 3600), ((int) (eta / 60)) % 60, ((int) eta) % 60);
-        /*
-        if (per_item > 800) {
-          stride /= 2;
-          ntotal *= 2;
-          offset *= 2;
-          printf("\nTotal: %lu, step: %lu, stride: %lu%s\n", ntotal, nstep, stride, CLEAR_LINE);
-        } else if (per_item < 300) {
-          stride *= 2;
-          ntotal /= 2;
-          offset /= 2;
-          printf("\nTotal: %lu, step: %lu, stride: %lu%s\n", ntotal, nstep, stride, CLEAR_LINE);
-        } else if (d2ms > 1000) {
-          nstep /= 2;
-          offset -= nstep;
-          global_work_size[0] = nstep;
-          printf("\nTotal: %lu, step: %lu, stride: %lu%s\n", ntotal, nstep, stride, CLEAR_LINE);
-        } else if (d2ms < 500) {
-          nstep *= 2;
-          offset -= nstep;
-          global_work_size[0] = nstep;
-          printf("\nTotal: %lu, step: %lu, stride: %lu%s\n", ntotal, nstep, stride, CLEAR_LINE);
-        }
-        */
-    }
-    puts("\rDone.                                                       ");
-    uint64_t d = stop_timer(t);
-    fclose(log_file);
+    for (int rule_changes = 1; rule_changes < 7; rule_changes++) {
 
-    printf("%fs / %llu items = %lfns/item\n", d / 1000000000.f, ntotal, (double) d / ntotal);
-    // fclose(f);
+        size_t combination_count = pow(N_STATES - 1, (size_t)rule_changes) * nCr(N_RULES - 1, (size_t)rule_changes);
+        check(clSetKernelArg(kernel, 1, sizeof(int), &rule_changes), "Rule changes");
+        check(clSetKernelArg(kernel, 2, sizeof(size_t), &combination_count), "Combination count");
+        size_t global_size = min(max_global_size, (combination_count & (combination_count-1)) == 0 ? combination_count : flp2(combination_count * 2));
+
+        //printf("Work Load possible: %d %d %d \n",CL_DEVICE_MAX_WORK_GROUP_SIZE,CL_DEVICE_MAX_WORK_ITEM_SIZES,CL_DEVICE_LOCAL_MEM_SIZE);
+
+        char best_result = 0;
+        size_t best_combination_id = 0;
+
+        uint64_t t = start_timer();
+        for (size_t offset = 0; offset < combination_count; offset += global_size) {
+            float perc = offset * 100.f / combination_count;
+            uint64_t t2 = start_timer();
+            check(clSetKernelArg(kernel, 0, sizeof(offset), &offset), "Argument offset");
+            printf("\rx  %3.3f%%", perc);
+            fflush(stdout);
+            check(clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &global_size, &local_size, 0, NULL, NULL), "\nExecute");
+            check(clFinish(queue), "\nFinish execute");
+            printf("\r<- %3.3f%%", perc);
+            fflush(stdout);
+            char result;
+            size_t combination_id;
+            check(clEnqueueReadBuffer(queue, mem_global_results, CL_TRUE, 0, sizeof(result), &result, 0, NULL, NULL), "\nRead");
+            check(clEnqueueReadBuffer(queue, mem_global_successes, CL_TRUE, 0, sizeof(combination_id), &combination_id, 0, NULL, NULL),
+                  "\nRead");
+            uint64_t d2 = stop_timer(t2);
+            printf("\rw  %3.3f%% %.4f" CLEAR_LINE, perc, d2 / 1000000.f);
+            fflush(stdout);
+
+            if (result > best_result) {
+                best_result = result;
+                best_combination_id = combination_id;
+            }
+
+            uint64_t d = get_timer() - t;
+            double per_item = (double) d / (offset + global_size);
+            double eta = ((double) d / ((offset + global_size) * 1000000000.)) * (combination_count - offset - global_size);
+            uint64_t d2ms = d2 / 1000000;
+            printf("  %fs / %llu items = %lfns/item, %llums/batch, ETA: %lfs (%dh%dm%ds)", d / 1000000000.f,
+                   offset + global_size,
+                   per_item, d2ms, eta,
+                   (int) (eta / 3600), ((int) (eta / 60)) % 60, ((int) eta) % 60);
+        }
+
+        printf("Best combination for %d rule changes:\n", rule_changes);
+        printf("Combination ID: %ld\n", best_combination_id);
+        size_t combination_id = best_combination_id;
+        int min_index = 0;
+        for (int i = 0; i < rule_changes; i++) {
+            int possible_indices = (N_RULES - 1) - min_index - (rule_changes - 1 - i);
+            int index = 1 + min_index + combination_id % possible_indices;
+            combination_id /= possible_indices;
+            int dest_state = combination_id % (N_STATES - 1);
+            dest_state += dest_state >= automaton[index];
+            combination_id /= (N_STATES - 1);
+            min_index = index + 1;
+
+            int working_index = index;
+            int middle = working_index / (N_RULES / (N_STATES - 1));
+            working_index %= N_RULES / (N_STATES - 1);
+            int left, right;
+            for (int row_size = 5; row_size > 0; row_size--) {
+                if (row_size > working_index) {
+                    left = 5 - row_size;
+                    right = left + working_index;
+                }
+                working_index -= row_size;
+            }
+            printf("(%d, %d, %d) (index %d) -> %d\n", left, middle, right, index, dest_state);
+        }
+
+        puts("\rDone.                                                       ");
+        uint64_t d = stop_timer(t);
+        printf("%fs / %llu items = %lfns/item\n", d / 1000000000.f, combination_count, (double) d / combination_count);
+    }
+
     return 0;
 }
