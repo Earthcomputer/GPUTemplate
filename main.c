@@ -89,7 +89,6 @@ int main(int argc, char **argv) {
     // Whenever you add a CL file, remember to also edit the bottom of CMakeLists.txt
     const char *kernel_file = "kernel.cl";
     const char *kernel_name = "start";
-    const char *header_names[] = {};
 
 
 #ifdef __linux
@@ -144,33 +143,14 @@ int main(int argc, char **argv) {
     cl_command_queue queue = clCreateCommandQueueWithProperties(context, device, 0, NULL);
 
     // Compile headers
-    const unsigned header_count = sizeof(header_names) / sizeof(*header_names);
     cl_int error;
-    cl_program headers[header_count];
-    for (int i = 0; i < header_count; i++) {
-        const char *header_src = readFile(header_names[i]);
-        headers[i] = clCreateProgramWithSource(context, header_count, &header_src, NULL, &error);
-        check(error, header_names[i]);
-        error = clCompileProgram(headers[i], 0, NULL, NULL, 0, NULL, NULL, NULL, NULL);
-        if (error == CL_COMPILE_PROGRAM_FAILURE || error == CL_BUILD_PROGRAM_FAILURE) {
-            size_t log_size;
-            clGetProgramBuildInfo(headers[i], device, CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size);
-            char *log = (char *) malloc(log_size);
-            clGetProgramBuildInfo(headers[i], device, CL_PROGRAM_BUILD_LOG, log_size, log, NULL);
-            printf("%s\n", log);
-            exit(error);
-        } else if (error) {
-            printf("Error compiling: %s\n", getErrorString(error));
-            exit(error);
-        }
-    }
 
     // Compile main source
     const char *main_src = readFile(kernel_file);
     cl_program main_cl = clCreateProgramWithSource(context, 1, &main_src, NULL, &error);
     check(error, "Creating program");
     printf("Compiling...\n");
-    error = clCompileProgram(main_cl, 0, NULL, NULL, header_count, header_count ? headers : NULL, header_count ? header_names : NULL, NULL, NULL);
+    error = clCompileProgram(main_cl, 0, NULL, NULL, 0, NULL, NULL, NULL, NULL);
     if (error == CL_COMPILE_PROGRAM_FAILURE || error == CL_BUILD_PROGRAM_FAILURE) {
         size_t log_size;
         clGetProgramBuildInfo(main_cl, device, CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size);
