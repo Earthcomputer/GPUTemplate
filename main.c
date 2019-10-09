@@ -39,7 +39,6 @@ static inline uint64_t stop_timer(uint64_t start) {
     return get_timer() - start;
 }
 
-#define LOCAL_SIZE 65536
 #define N_STATES 5
 #define N_RULES (N_STATES * (N_STATES+1) / 2 * (N_STATES-1))
 #define max(a, b) ((a) > (b) ? (a) : (b))
@@ -199,12 +198,12 @@ int main(int argc, char **argv) {
     check(clGetDeviceInfo(device, CL_DEVICE_ADDRESS_BITS, sizeof(address_bits), &address_bits, NULL), "Get device address bits");
     size_t max_global_size = 1LLU << min(address_bits, 32);
 
-    printf("Local size: %ld; Global size: %ld\n", LOCAL_SIZE, max_global_size);
+    printf("Global size: %ld\n", max_global_size);
 
     cl_mem mem_base_automaton = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(automaton), NULL, NULL);
 
-    cl_mem mem_global_results = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(char) * (max_global_size / LOCAL_SIZE), NULL, NULL);
-    cl_mem mem_global_successes = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(size_t) * (max_global_size / LOCAL_SIZE), NULL, NULL);
+    cl_mem mem_global_results = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(char) * max_global_size, NULL, NULL);
+    cl_mem mem_global_successes = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(size_t) * max_global_size, NULL, NULL);
 
     check(clEnqueueWriteBuffer(queue, mem_base_automaton, CL_FALSE, 0, sizeof(automaton), automaton, 0, NULL, NULL), "Write Base Automaton");
 
@@ -236,8 +235,7 @@ int main(int argc, char **argv) {
             check(clSetKernelArg(kernel, 0, sizeof(offset), &offset), "Argument offset");
             printf("\rx  %3.3f%%", perc);
             fflush(stdout);
-            size_t local_size = LOCAL_SIZE;
-            check(clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &global_size, &local_size, 0, NULL, NULL), "\nExecute");
+            check(clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &global_size, NULL, 0, NULL, NULL), "\nExecute");
             check(clFinish(queue), "\nFinish execute");
             printf("\r<- %3.3f%%", perc);
             fflush(stdout);

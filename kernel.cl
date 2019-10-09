@@ -1,5 +1,4 @@
 
-#define LOCAL_SIZE 65536
 #define N_STATES 5
 #define N_RULES (N_STATES * (N_STATES+1) / 2 * (N_STATES-1))
 #define MAX_SIZE 12
@@ -53,9 +52,6 @@ __kernel void start(ulong offset, int rule_changes, ulong combination_count, __c
        __global char *global_results, __global size_t *global_successes) {
 
     size_t global_id = get_global_id(0);
-    size_t local_id = get_local_id(0);
-    size_t local_size = get_local_size(0);
-    size_t global_index = global_id / local_size;
 
     // Combination to rule changes
     size_t combination_id = offset + global_id;
@@ -84,30 +80,14 @@ __kernel void start(ulong offset, int rule_changes, ulong combination_count, __c
     successes += simulate(10, automaton);
     successes = (successes + 1) * simulate(9, automaton);
 
-    __local char local_results[LOCAL_SIZE];
-    __local size_t local_successes[LOCAL_SIZE];
-
     // Search for the result with the most successes
-    local_results[local_id] = successes;
-    local_successes[local_id] = offset + global_id;
-    barrier(CLK_LOCAL_MEM_FENCE);
-    for (int i = local_size / 2; i > 0; i >>= 1) {
-        if (local_id < i && local_results[local_id + i] > local_results[local_id]) {
-            local_results[local_id] = local_results[local_id + i];
-            local_successes[local_id] = local_successes[local_id + i];
-        }
-        barrier(CLK_LOCAL_MEM_FENCE);
-    }
-
-    if (local_id == 0) {
-        global_results[global_index] = local_results[0];
-        global_successes[global_index] = local_successes[0];
-    }
+    global_results[global_id] = successes;
+    global_results[global_id] = offset + global_id;
     barrier(CLK_GLOBAL_MEM_FENCE);
-    for (int i = get_global_size(0) / local_size / 2; i > 0; i >>= 2) {
-        if (local_id == 0 && global_index < i && global_results[global_index + i] > global_results[global_index]) {
-            global_results[global_index] = global_results[global_index + i];
-            global_successes[global_index] = global_successes[global_index + i];
+    for (int i = get_global_size(0) / 2; i > 0; i >>= 2) {
+        if (global_id < i && global_results[global_id + i] > global_results[global_id]) {
+            global_results[global_id] = global_results[global_id + i];
+            global_successes[global_id] = global_successes[global_id + i];
         }
         barrier(CLK_GLOBAL_MEM_FENCE);
     }
